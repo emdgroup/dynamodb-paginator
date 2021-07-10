@@ -1,0 +1,47 @@
+{
+  "name": "@emdgroup/dynamodb-paginator",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "repository": "https://github.com/emdgroup/dynamodb-paginator.git",
+  "author": "Moritz Onken <onken@netcubed.de>",
+  "license": "Apache-2.0",
+  "keywords": [
+    "aws",
+    "dynamodb",
+    "pagination"
+  ],
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@aws-sdk/lib-dynamodb": "^3.0.0",
+    "@aws-sdk/client-dynamodb": "^3.0.0",
+    "@aws-sdk/smithy-client": "^3.0.0",
+    "@aws-sdk/types": "^3.0.0",
+    "@aws-sdk/util-dynamodb": "^3.0.0"
+  },
+  "devDependencies": {
+    "@tsconfig/node12": "^1.0.9",
+    "@types/chai": "^4.2.21",
+    "@types/mocha": "^8.2.3",
+    "@types/node": "^16.3.1",
+    "chai": "^4.3.4",
+    "mocha": "^9.0.2",
+    "ts-node": "^10.1.0",
+    "typedoc": "^0.21.4",
+    "typedoc-github-wiki-theme": "^0.5.0",
+    "typedoc-plugin-markdown": "^3.10.3",
+    "typescript": "^4.3.5"
+  },
+  "engines": {
+    "node": ">= 12"
+  },
+  "scripts": {
+    "prepack": "yarn docs && rm -rf dist && tsc",
+    "docs": "yarn --silent docs:build && yarn --silent docs:merge",
+    "docs:build": "rm -rf docs README.md && yarn --silent typedoc --hideInPageTOC --excludeNotDocumented --disableSources --theme ./node_modules/typedoc-github-wiki-theme/dist src/index.ts",
+    "docs:merge": "ts-node bin/merge-docs",
+    "test": "mocha --bail --watch-files '**/*.ts' --extension ts --require ts-node/register --timeout 60000 'src/**/*.spec.ts'"
+  }
+}
