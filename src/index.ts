@@ -1,5 +1,5 @@
-import { QueryCommand } from '@aws-sdk/lib-dynamodb';
-import type { DynamoDBDocumentClient as DynamoDBDocumentClientV3, QueryCommandInput, QueryCommandOutput } from '@aws-sdk/lib-dynamodb';
+import { QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
+import type { DynamoDBDocumentClient as DynamoDBDocumentClientV3, QueryCommandInput, QueryCommandOutput, ScanCommandInput, ScanCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { NativeAttributeValue } from '@aws-sdk/util-dynamodb';
 
 import { createDecipheriv, createCipheriv, randomBytes, CipherKey } from 'crypto';
@@ -50,8 +50,9 @@ export function decodeKey(token: string, encKey: CipherKey): AttributeMap {
 }
 
 export interface PaginationResponseOptions<T extends AttributeMap> extends PaginateQueryOptions<T>, QueryPaginatorOptions {
-    query: QueryCommandInput;
+    query: QueryCommandInput | ScanCommandInput;
     key: () => Promise<CipherKey>;
+    method: 'scan' | 'query';
 }
 
 /**
@@ -90,6 +91,7 @@ export class PaginationResponse<T = AttributeMap> {
     private readonly client;
     private readonly schema;
     private readonly indexes;
+    private readonly method;
 
 
     constructor(args: PaginationResponseOptions<T>) {
@@ -109,6 +111,7 @@ export class PaginationResponse<T = AttributeMap> {
         this.client = args.client;
         this.schema = args.schema ?? ['PK', 'SK'] as [string, string];
         this.indexes = args.indexes ?? PaginationResponse.defaultIndex;
+        this.method = args.method;
     }
 
     private static defaultIndex(index: string): [string, string] {
@@ -169,7 +172,7 @@ export class PaginationResponse<T = AttributeMap> {
     }
 
     private clone<K>(args: Partial<PaginationResponseOptions<K>>): PaginationResponse<K | T> {
-        const { _limit: limit, _from: from, _query: query, _filter: filter, client, key } = this;
+        const { _limit: limit, _from: from, _query: query, _filter: filter, client, key, method } = this;
         return new PaginationResponse<K | T>({
             client,
             key,
@@ -177,6 +180,7 @@ export class PaginationResponse<T = AttributeMap> {
             filter,
             from,
             limit,
+            method,
             ...args,
         });
     }
@@ -240,14 +244,14 @@ export class PaginationResponse<T = AttributeMap> {
         };
     }
 
-    private async query(query: QueryCommandInput): Promise<QueryCommandOutput> {
+    private async query(query: ScanCommandInput | QueryCommandInput): Promise<ScanCommandOutput | QueryCommandOutput> {
         if ('describeTable' in this.client) {
             throw new Error('Please provide a DynamoDB DocumentClient');
         } else if ('send' in this.client) {
-            const command = new QueryCommand(query);
+            const command = this.method === 'query' ? new QueryCommand(query) : new ScanCommand(query);
             return this.client.send(command);
         } else {
-            return this.client.query(query).promise() as Promise<QueryCommandOutput>;
+            return this.client[this.method](query).promise() as Promise<QueryCommandOutput>;
         }
     }
 
@@ -305,6 +309,7 @@ export class PaginationResponse<T = AttributeMap> {
 type DynamoDBDocumentClientV2 = {
     describeTable?: undefined; // ensure we have a DocumentClient
     query: (...args: any) => { promise: () => Promise<Omit<QueryCommandOutput, '$metadata'>> }; // v2
+    scan: (...args: any) => { promise: () => Promise<Omit<ScanCommandOutput, '$metadata'>> }; // v2
 };
 
 /**
@@ -371,7 +376,7 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  * or a mobile app) without disclosing potentially sensitive data and protecting the integrity of the token.
  * 
  * 
- * **Why is the pagination token encrpyted?**
+ * **Why is the pagination token encrypted?**
  * 
  * When researching pagination with DynamoDB, you will come across blog posts and libraries that recommend
  * to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command). This is dangerous!
@@ -468,6 +473,15 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  *   client: documentClient,
  * });
  * ```
+ * 
+ * To create a paginator over a scan operation, use `createScan`.
+ * 
+ * ```typescript
+ * const paginateQuery = QueryPaginator.createScan({
+ *   key: () => Promise.resolve(crypto.randomBytes(32)),
+ *   client: documentClient,
+ * });
+ * ```
  */
 
 export class QueryPaginator {
@@ -503,6 +517,14 @@ export class QueryPaginator {
         return instance.paginateQuery.bind(instance);
     }
 
+    /**
+     * Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
+     */
+    public static createScan(args: QueryPaginatorOptions): <T extends AttributeMap>(scan: ScanCommandInput, opts?: PaginateQueryOptions<T>) => PaginationResponse<T> {
+        const instance = new QueryPaginator(args);
+        return instance.paginateScan.bind(instance);
+    }
+
     paginateQuery<T extends AttributeMap>(query: QueryCommandInput, { filter, ...args }: PaginateQueryOptions<T> = {}): PaginationResponse<PredicateFor<typeof filter>> {
         return new PaginationResponse({
             ...args,
@@ -512,6 +534,20 @@ export class QueryPaginator {
             indexes: this.indexes,
             filter,
             query,
+            method: 'query',
+        });
+    }
+
+    paginateScan<T extends AttributeMap>(query: ScanCommandInput, { filter, ...args }: PaginateQueryOptions<T> = {}): PaginationResponse<PredicateFor<typeof filter>> {
+        return new PaginationResponse({
+            ...args,
+            client: this.client,
+            key: () => this.ensureResolvedKey(),
+            schema: this.schema,
+            indexes: this.indexes,
+            filter,
+            query,
+            method: 'scan',
         });
     }
 }

@@ -60,7 +60,12 @@ describe('aws', () => {
             key: randomBytes(32),
         });
 
-        it('simple case', async () => {
+        const paginateScan = QueryPaginator.createScan({
+            client: docClient,
+            key: randomBytes(32),
+        });
+
+        it('simple case: query', async () => {
             const paginator = paginateQuery({
                 TableName: TABLE_NAME,
                 KeyConditionExpression: 'PK = :pk',
@@ -72,6 +77,18 @@ describe('aws', () => {
             const all = await paginator.all();
             expect(all.length).to.equal(25);
             expect(paginator.requestCount).to.equal(1);
+            expect(paginator.nextToken).to.be.undefined;
+        });
+
+        it('simple case: scan', async () => {
+            const paginator = paginateScan({
+                TableName: TABLE_NAME,
+            });
+
+            const all = await paginator.all();
+            expect(all.length).to.equal(25);
+            expect(paginator.requestCount).to.equal(1);
+            expect(paginator.nextToken).to.be.undefined;
         });
 
         it('low limit', async () => {
