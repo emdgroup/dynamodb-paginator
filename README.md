@@ -16,7 +16,7 @@ library aims at providing a developer friendly interface around the DynamoDB `Qu
 provides a secure way of sharing a pagination token with an untrustworthy client (like the browser
 or a mobile app) without disclosing potentially sensitive data and protecting the integrity of the token.
 
-**Why is the pagination token encrpyted?**
+**Why is the pagination token encrypted?**
 
 When researching pagination with DynamoDB, you will come across blog posts and libraries that recommend
 to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command). This is dangerous!
@@ -113,6 +113,15 @@ const paginateQuery = QueryPaginator.create({
 });
 ```
 
+To create a paginator over a scan operation, use `createScan`.
+
+```typescript
+const paginateQuery = QueryPaginator.createScan({
+  key: () => Promise.resolve(crypto.randomBytes(32)),
+  client: documentClient,
+});
+```
+
 ## Constructors
 
 ### constructor
@@ -160,6 +169,45 @@ Returns a function that accepts a DynamoDB Query command and return an instance 
 | Name | Type |
 | :------ | :------ |
 | `query` | `QueryCommandInput` |
+| `opts?` | [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\> |
+
+##### Returns
+
+[`PaginationResponse`](#PaginationResponse)<`T`\>
+
+___
+
+### createScan
+
+▸ `Static` **createScan**(`args`): <T\>(`scan`: `ScanCommandInput`, `opts?`: [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\>) => [`PaginationResponse`](#PaginationResponse)<`T`\>
+
+Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `args` | [`QueryPaginatorOptions`](#QueryPaginatorOptions) |
+
+#### Returns
+
+`fn`
+
+▸ <`T`\>(`scan`, `opts?`): [`PaginationResponse`](#PaginationResponse)<`T`\>
+
+Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
+
+##### Type parameters
+
+| Name | Type |
+| :------ | :------ |
+| `T` | extends `AttributeMap` |
+
+##### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `scan` | `ScanCommandInput` |
 | `opts?` | [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\> |
 
 ##### Returns
