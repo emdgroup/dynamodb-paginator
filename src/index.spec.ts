@@ -1,7 +1,7 @@
-import { expect } from 'chai';
+import { strict as assert } from 'assert';
 import { randomBytes } from 'crypto';
 import { createTestTable } from './testing';
-import { encodeKey, decodeKey, QueryPaginator, AttributeMap } from '.';
+import { encodeKey, decodeKey, Paginator, AttributeMap } from '.';
 import { docClient } from './testing';
 import { b64uDecode } from './util';
 
@@ -14,25 +14,27 @@ function createKey(pk: string[], sk: string[]): { PK: string, SK: string } {
 
 describe('aws', () => {
     describe('encodeKey', () => {
+        const encKey = randomBytes(32);
+        const sigKey = randomBytes(32);
         it('can encode and decode', () => {
-            const encKey = randomBytes(32);
             const key = { PK: Buffer.from('hello'), SK: Buffer.from('world') };
-            const encoded = encodeKey(key, encKey);
-            const decoded = decodeKey(encoded, encKey);
-            expect(decoded.PK.equals(key.PK)).to.be.true;
-            expect(decoded.SK.equals(key.SK)).to.be.true;
-            expect(b64uDecode(encoded)).of.length(48);
-            expect(encoded).of.length(64);
+            const encoded = encodeKey(key, { encKey, sigKey });
+            const decoded = decodeKey(encoded, { encKey, sigKey });
+            assert(decoded.PK.equals(key.PK));
+            assert(decoded.SK.equals(key.SK));
+            assert.equal(b64uDecode(encoded).length, 64);
+            assert.equal(encoded.length, 86);
         });
 
         it('handles undefined', () => {
             const encKey = randomBytes(32);
             const key = { PK: undefined, SK: 'world' };
-            const encoded = encodeKey(key, encKey);
-            const decoded = decodeKey(encoded, encKey);
-            expect(decoded).to.deep.equal({
-                SK: 'world'
-            });
+            const encoded = encodeKey(key, { encKey, sigKey });
+            const decoded = decodeKey(encoded, { encKey, sigKey });
+            assert.deepEqual(decoded, { SK: 'world' });
+            assert.throws(() => decodeKey(encoded, { encKey: sigKey, sigKey }), { name: 'TokenError' });
+            assert.throws(() => decodeKey(encoded, { encKey, sigKey: encKey }), { name: 'TokenError' });
+            assert.throws(() => decodeKey(encoded.slice(1), { encKey, sigKey }), { name: 'TokenError' });
         });
     });
 
@@ -55,12 +57,12 @@ describe('aws', () => {
             },
         }));
 
-        const paginateQuery = QueryPaginator.create({
+        const paginateQuery = Paginator.createQuery({
             client: docClient,
             key: randomBytes(32),
         });
 
-        const paginateScan = QueryPaginator.createScan({
+        const paginateScan = Paginator.createScan({
             client: docClient,
             key: randomBytes(32),
         });
@@ -75,9 +77,10 @@ describe('aws', () => {
             });
 
             const all = await paginator.all();
-            expect(all.length).to.equal(25);
-            expect(paginator.requestCount).to.equal(1);
-            expect(paginator.nextToken).to.be.undefined;
+            assert.equal(all.length, 25);
+            assert.equal(paginator.requestCount, 1);
+            assert(paginator.finished);
+            assert.equal(typeof paginator.nextToken, 'string');
         });
 
         it('simple case: scan', async () => {
@@ -86,9 +89,10 @@ describe('aws', () => {
             });
 
             const all = await paginator.all();
-            expect(all.length).to.equal(25);
-            expect(paginator.requestCount).to.equal(1);
-            expect(paginator.nextToken).to.be.undefined;
+            assert.equal(all.length, 25);
+            assert.equal(paginator.requestCount, 1);
+            assert(paginator.finished);
+            assert.equal(typeof paginator.nextToken, 'string');
         });
 
         it('low limit', async () => {
@@ -102,8 +106,8 @@ describe('aws', () => {
             });
 
             const all = await paginator.all();
-            expect(all.length).to.equal(25);
-            expect(paginator.requestCount).to.equal(13);
+            assert.equal(all.length, 25);
+            assert.equal(paginator.requestCount, 13);
         });
 
         it('filter expression with many empty responses', async () => {
@@ -119,9 +123,9 @@ describe('aws', () => {
             });
 
             const all = await paginator.all();
-            expect(all.length).to.equal(1);
-            expect(paginator.requestCount).to.equal(6);
-            expect(paginator.scannedCount).to.equal(25);
+            assert.equal(all.length, 1);
+            assert.equal(paginator.requestCount, 6);
+            assert.equal(paginator.scannedCount, 25);
         });
 
         it('global limit', async () => {
@@ -139,13 +143,13 @@ describe('aws', () => {
             });
 
             const all = await paginator.all();
-            expect(all.length).to.equal(2);
-            expect(paginator.requestCount).to.equal(4);
-            expect(paginator.scannedCount).to.equal(20);
+            assert.equal(all.length, 2);
+            assert.equal(paginator.requestCount, 4);
+            assert.equal(paginator.scannedCount, 20);
         });
 
         it('nextToken', async () => {
-            const paginator = (nextToken?: string) => paginateQuery({
+            const paginator = ({ from, context }: { from?: string, context?: string } = {}) => paginateQuery({
                 TableName: TABLE_NAME,
                 KeyConditionExpression: 'PK = :pk',
                 FilterExpression: 'GSI1SK >= :sk',
@@ -156,20 +160,31 @@ describe('aws', () => {
                 Limit: 5,
                 ReturnConsumedCapacity: 'TOTAL',
             }, {
-                from: nextToken,
+                from,
                 limit: 15,
+                context,
             });
 
             const page1 = paginator();
-            expect((await page1.all()).length).to.equal(15);
-            expect(page1.requestCount).to.equal(4);
-            expect(page1.consumedCapacity).to.equal(2);
-            expect(page1.nextToken).to.be.a('string').of.length(64);
+            assert.equal((await page1.all()).length, 15);
+            assert.equal(page1.requestCount, 4);
+            assert.equal(page1.consumedCapacity, 2);
+            assert(page1.finished === false);
 
-            const page2 = paginator(page1.nextToken);
-            expect((await page2.all()).length).to.equal(6);
-            expect(page2.requestCount).to.equal(2);
-            expect(page2.consumedCapacity).to.equal(1);
+            const page2 = paginator({ from: page1.nextToken });
+            assert.equal((await page2.all()).length, 6);
+            assert.equal(page2.requestCount, 2);
+            assert(page2.finished);
+            assert.equal(page2.consumedCapacity, 1);
+
+            const page3 = paginator({ from: page2.nextToken });
+            assert.equal((await page3.all()).length, 0);
+            assert.equal(page3.requestCount, 1);
+            assert(page3.finished);
+            assert.equal(page3.consumedCapacity, 0.5);
+
+            const pageCtx = paginator({ from: page1.nextToken, context: 'foobar' });
+            await assert.rejects(() => pageCtx.all(), { name: 'TokenError' });
         });
 
         it('predicate', async () => {
@@ -191,8 +206,8 @@ describe('aws', () => {
                 Limit: 5,
             }).limit(7).filter(isFoo);
             const all = await paginator.all();
-            expect(all.length).to.equal(5);
-            expect(paginator.requestCount).to.equal(6);
+            assert.equal(all.length, 5);
+            assert.equal(paginator.requestCount, 6);
         });
 
         it('peek', async () => {
@@ -206,19 +221,19 @@ describe('aws', () => {
                 },
             });
             const first = await paginator.peek();
-            expect(first?.SK).to.equal('i:0016');
-            expect(paginator.requestCount).to.equal(1);
+            assert.equal(first?.SK, 'i:0016');
+            assert.equal(paginator.requestCount, 1);
 
             const again = await paginator.peek();
-            expect(again?.SK).to.equal('i:0016');
-            expect(paginator.requestCount).to.equal(1);
+            assert.equal(again?.SK, 'i:0016');
+            assert.equal(paginator.requestCount, 1);
 
             const all = await paginator.all();
-            expect(all.length).to.equal(9);
-            expect(paginator.requestCount).to.equal(1);
-            expect(all[0].SK).to.equal('i:0016');
+            assert.equal(all.length, 9);
+            assert.equal(paginator.requestCount, 1);
+            assert.equal(all[0].SK, 'i:0016');
 
-            expect(await paginator.peek()).to.be.undefined;
+            assert.equal(await paginator.peek(), undefined);
         });
 
         it('nested peek', async () => {
@@ -235,16 +250,16 @@ describe('aws', () => {
             let i = 16;
 
             await paginator.peek();
-            expect(paginator.requestCount).to.equal(9);
+            assert.equal(paginator.requestCount, 9);
 
             for await (const item of paginator) {
-                expect(parseInt(item.SK.slice(2))).to.equal(i);
+                assert.equal(parseInt(item.SK.slice(2)), i);
                 const next = await paginator.peek();
-                if (i === 24) expect(next).to.be.undefined;
-                else expect(parseInt(next?.SK.slice(2))).to.equal(i + 1);
+                if (i === 24) assert.equal(next, undefined);
+                else assert.equal(parseInt(next?.SK.slice(2)), i + 1);
                 i++;
             }
-            expect(paginator.requestCount).to.equal(13);
+            assert.equal(paginator.requestCount, 13);
         });
 
         // TODO: add tests around peek, limit and count

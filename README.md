@@ -6,20 +6,21 @@
 
 Features:
   * Supports Binary and String key types
-  * Generates AES256 encrypted pagination tokens
+  * Generates AES256 encrypted and authenticated pagination tokens
   * Works with TypeScript type guards natively
   * Ensures a minimum number of items when using a `FilterExpression`
   * Compatible with AWS SDK v2 and v3
 
-Pagination in NoSQL stores such as DynamoDB can be challenging at times. This
-library aims at providing a developer friendly interface around the DynamoDB `Query` API. It also
-provides a secure way of sharing a pagination token with an untrustworthy client (like the browser
-or a mobile app) without disclosing potentially sensitive data and protecting the integrity of the token.
+Pagination in NoSQL stores such as DynamoDB can be challenging. This
+library provides a developer friendly interface around the DynamoDB `Query` and `Scan` APIs.
+It generates and encrypted and authenticated pagination token that can be shared with an untrustworthy
+client (like the browser or a mobile app) without disclosing potentially sensitive data and protecting
+the integrity of the token.
 
 **Why is the pagination token encrypted?**
 
 When researching pagination with DynamoDB, you will come across blog posts and libraries that recommend
-to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command). This is dangerous!
+to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command). **This is dangerous!**
 
 The token is sent to a client which can happily decode the token, look at the values for the
 partition and sort key and even modify the token, making the application vulnerable to NoSQL injections.
@@ -30,7 +31,7 @@ partition and sort key and even modify the token, making the application vulnera
 ## Usage
 
 ```typescript
-import { QueryPaginator } from '@emdgroup/dynamodb-paginator';
+import { Paginator } from '@emdgroup/dynamodb-paginator';
 import { DynamoDB } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocument } from '@aws-sdk/lib-dynamodb';
 
@@ -40,7 +41,7 @@ const client = DynamoDBDocument.from(new DynamoDB({}));
 // persist the key in the SSM parameter store or similar
 const key = crypto.randomBytes(32);
 
-const paginateQuery = QueryPaginator.create({
+const paginateQuery = Paginator.createQuery({
   key,
   client,
 });
@@ -100,14 +101,14 @@ for await (const user of paginator.filter(isUser)) {
 }
 ```
 
-## QueryPaginator
+## Paginator
 
-The `QueryPaginator` class is a factory for the [`PaginationResponse`](#PaginationResponse) object. This class
+The `Paginator` class is a factory for the [`PaginationResponse`](#PaginationResponse) object. This class
 is instantiated with the 32-byte encryption key and the DynamoDB document client (versions
 2 and 3 of the AWS SDK are supported).
 
 ```typescript
-const paginateQuery = QueryPaginator.create({
+const paginateQuery = Paginator.createQuery({
   key: () => Promise.resolve(crypto.randomBytes(32)),
   client: documentClient,
 });
@@ -116,7 +117,7 @@ const paginateQuery = QueryPaginator.create({
 To create a paginator over a scan operation, use `createScan`.
 
 ```typescript
-const paginateQuery = QueryPaginator.createScan({
+const paginateScan = Paginator.createScan({
   key: () => Promise.resolve(crypto.randomBytes(32)),
   client: documentClient,
 });
@@ -126,7 +127,7 @@ const paginateQuery = QueryPaginator.createScan({
 
 ### constructor
 
-• **new QueryPaginator**(`args`)
+• **new Paginator**(`args`)
 
 Use the static factory function [`create()`](#create) instead of the constructor.
 
@@ -134,13 +135,13 @@ Use the static factory function [`create()`](#create) instead of the constructor
 
 | Name | Type |
 | :------ | :------ |
-| `args` | [`QueryPaginatorOptions`](#QueryPaginatorOptions) |
+| `args` | [`PaginatorOptions`](#PaginatorOptions) |
 
 ## Methods
 
-### create
+### createQuery
 
-▸ `Static` **create**(`args`): <T\>(`query`: `QueryCommandInput`, `opts?`: [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\>) => [`PaginationResponse`](#PaginationResponse)<`T`\>
+▸ `Static` **createQuery**(`args`): <T\>(`query`: `QueryCommandInput`, `opts?`: [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\>) => [`PaginationResponse`](#PaginationResponse)<`T`\>
 
 Returns a function that accepts a DynamoDB Query command and return an instance of `PaginationResponse`.
 
@@ -148,7 +149,7 @@ Returns a function that accepts a DynamoDB Query command and return an instance 
 
 | Name | Type |
 | :------ | :------ |
-| `args` | [`QueryPaginatorOptions`](#QueryPaginatorOptions) |
+| `args` | [`PaginatorOptions`](#PaginatorOptions) |
 
 #### Returns
 
@@ -187,7 +188,7 @@ Returns a function that accepts a DynamoDB Scan command and return an instance o
 
 | Name | Type |
 | :------ | :------ |
-| `args` | [`QueryPaginatorOptions`](#QueryPaginatorOptions) |
+| `args` | [`PaginatorOptions`](#PaginatorOptions) |
 
 #### Returns
 
@@ -215,7 +216,7 @@ Returns a function that accepts a DynamoDB Scan command and return an instance o
 [`PaginationResponse`](#PaginationResponse)<`T`\>
 
 
-## QueryPaginatorOptions
+## PaginatorOptions
 
 ## Properties
 
@@ -324,6 +325,18 @@ Number of items scanned by DynamoDB
 
 ## Accessors
 
+### finished
+
+• `get` **finished**(): `boolean`
+
+Returns true if all items for this query have been returned from DynamoDB.
+
+#### Returns
+
+`boolean`
+
+___
+
 ### nextToken
 
 • `get` **nextToken**(): `undefined` \| `string`
@@ -339,7 +352,7 @@ by DynamoDB. It also prevents a client from modifying the token and therefore ma
 execution (NoSQL injection).
 
 The length of the token depends on the length of the values for the partition and sort key of the table
-or index that you are querying. The token length is at least 64 characters.
+or index that you are querying. The token length is at least 42 characters.
 
 #### Returns
 
@@ -487,6 +500,19 @@ for await (const item of items) {
 | `T` | extends `AttributeMap` |
 
 ## Properties
+
+### context
+
+• `Optional` **context**: `string` \| `Buffer`
+
+The context defines the additional authenticated data (AAD) that is used to generate the signature
+for the pagination token. It is optional but recommended because it adds an additional layer of
+authentication to the pagination token. Pagination token will be tied to the context and replaying
+them in other contexts will fail. Good examples for the context are a user ID or a session ID concatenated
+with the purpose of the query, such as `ListPets`. The context cannot be extracted from the pagination
+token and can therefore contain sensitive data.
+
+___
 
 ### from
 

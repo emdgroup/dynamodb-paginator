@@ -1,5 +1,5 @@
 import { DynamoDB, CreateTableCommandInput } from '@aws-sdk/client-dynamodb';
-import { SdkError } from '@aws-sdk/smithy-client';
+import { ServiceException } from '@aws-sdk/smithy-client';
 import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
 import { sleep } from './util';
@@ -25,8 +25,7 @@ export function createTestTable(
         await ddb.createTable({
             TableName: table,
             ...createTable,
-        }).catch((err: SdkError) => {
-            console.log(err.name);
+        }).catch((err: ServiceException) => {
             if (err.name !== 'ResourceInUseException') throw err;
             tableExists = true;
         });

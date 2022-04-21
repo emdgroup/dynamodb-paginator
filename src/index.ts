@@ -1,55 +1,94 @@
+import { createDecipheriv, createCipheriv, randomBytes, CipherKey, createHmac, timingSafeEqual } from 'crypto';
+import { strict as assert } from 'assert';
+
 import { QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient as DynamoDBDocumentClientV3, QueryCommandInput, QueryCommandOutput, ScanCommandInput, ScanCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { NativeAttributeValue } from '@aws-sdk/util-dynamodb';
-
-import { createDecipheriv, createCipheriv, randomBytes, CipherKey } from 'crypto';
 
 import { b64uDecode, b64uEncode, uInt16Buffer } from './util';
 
 export type AttributeMap = { [key: string]: NativeAttributeValue };
 
+export { QueryCommandInput, QueryCommandOutput, ScanCommandInput, ScanCommandOutput } from '@aws-sdk/lib-dynamodb';
+
+interface Keys {
+    encKey: CipherKey;
+    sigKey: CipherKey;
+}
+
 /**
  * @private
  * A DynamoDB key { PK: abc, SK: cdef } is encoded as follows
- * 16 bytes iv + 'S' + 2 bytes (length of PK) + PK + 2 bytes (length of "abc") + "abc"
- *             + 'S' + 2 bytes (length of SK) + SK + 2 bytes (length of "cdef") + "cdef"
+ * 'S' + 1 byte (length of "PK") + "PK" + 2 bytes (length of "abc") + "abc"
+ * 'S' + 1 byte (length of "SK") + "SK" + 2 bytes (length of "cdef") + "cdef"
  */
 
-export function encodeKey(key: AttributeMap, encKey: CipherKey): string {
+export function encodeKey(key: AttributeMap, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): string {
     const parts = Object.entries(key).filter(([, v]) => v !== undefined).map(([k, v]) => [
         Buffer.from(Buffer.isBuffer(v) ? 'B' : 'S'),
-        ...[k, v].map((b) => [uInt16Buffer(b.length), Buffer.from(b)]).flat(),
+        Buffer.from([k.length]), Buffer.from(k),
+        uInt16Buffer(v.length), Buffer.from(v),
     ]).flat();
+    const plaintext = Buffer.concat(parts);
     const iv = randomBytes(16);
     const cipher = createCipheriv('aes-256-cbc', encKey, iv);
-    const encrypted = cipher.update(Buffer.concat(parts));
-    const encryptedFinal = cipher.final();
-    return b64uEncode(Buffer.concat([iv, encrypted, encryptedFinal]));
+    const cipherText = Buffer.concat([iv, cipher.update(plaintext), cipher.final()]);
+    const toSign = Buffer.concat([aad, cipherText, Buffer.alloc(8)]);
+    toSign.writeUint32BE(aad.length, toSign.length - 4);
+    return b64uEncode(Buffer.concat([
+        cipherText,
+        createHmac('sha256', sigKey).update(toSign).digest().slice(0, 16),
+    ]));
 }
 
-export function decodeKey(token: string, encKey: CipherKey): AttributeMap {
+export class TokenError extends Error {
+    constructor(message = 'Token is invalid') {
+        super(message);
+        this.name = 'TokenError';
+    }
+}
+
+function _decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): AttributeMap {
     const encrypted = b64uDecode(token);
-    const key: AttributeMap = {};
+    assert(token.length > 48 && encrypted.length % 16 === 0);
     const iv = encrypted.slice(0, 16);
+    const cipherText = encrypted.slice(0, -16);
+    const sig = encrypted.slice(-16);
+    const toSign = Buffer.concat([aad, cipherText, Buffer.alloc(8)]);
+    toSign.writeUint32BE(aad.length, toSign.length - 4);
+    assert(timingSafeEqual(
+        createHmac('sha256', sigKey).update(toSign).digest().slice(0, 16),
+        sig,
+    ));
     const decipher = createDecipheriv('aes-256-cbc', encKey, iv);
-    const bufUpdate = decipher.update(encrypted.slice(16));
-    const bufFinal = decipher.final();
-    const buf = Buffer.concat([bufUpdate, bufFinal]);
+    const buf = Buffer.concat([
+        decipher.update(cipherText.slice(16)),
+        decipher.final(),
+    ]);
+    const key: AttributeMap = {};
     let pos = 0;
     while (pos < buf.length) {
         const t = buf.slice(0, 1).toString();
         pos += 1;
-        const keyLen = buf.readUInt16BE(pos);
-        const valLen = buf.readUInt16BE(pos + 2 + keyLen);
-        const k = buf.slice(pos + 2, pos + 2 + keyLen).toString();
-        const v = buf.slice(pos + 4 + keyLen, pos + 4 + keyLen + valLen);
+        const keyLen = buf[pos++];
+        const valLen = buf.readUInt16BE(pos + keyLen);
+        const k = buf.slice(pos, pos + keyLen).toString();
+        const v = buf.slice(pos + 2 + keyLen, pos + 2 + keyLen + valLen);
         key[k] = t === 'B' ? v : v.toString();
-        pos += 2 + keyLen + 2 + valLen;
+        pos += keyLen + 2 + valLen;
     }
     return key;
 }
 
-export interface PaginationResponseOptions<T extends AttributeMap> extends PaginateQueryOptions<T>, QueryPaginatorOptions {
+export function decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): AttributeMap {
+    try {
+        return _decodeKey(token, { encKey, sigKey }, aad);
+    } catch (err) {
+        throw new TokenError();
+    }
+}
+
+export interface PaginationResponseOptions<T extends AttributeMap> extends PaginateQueryOptions<T>, PaginatorOptions {
     query: QueryCommandInput | ScanCommandInput;
     key: () => Promise<CipherKey>;
     method: 'scan' | 'query';
@@ -78,7 +117,7 @@ export class PaginationResponse<T = AttributeMap> {
 
     private _nextKey?: AttributeMap;
     private _done: boolean;
-    private _resolvedKey?: CipherKey;
+    private _resolvedKey?: Keys;
     private _curPage: AttributeMap[];
     private _lastEvaluatedKey: AttributeMap | undefined;
 
@@ -86,6 +125,7 @@ export class PaginationResponse<T = AttributeMap> {
     private readonly _filter;
     private readonly _from;
     private readonly _query;
+    private readonly _context;
 
     private readonly key;
     private readonly client;
@@ -105,6 +145,7 @@ export class PaginationResponse<T = AttributeMap> {
         this._filter = args.filter;
         this._from = args.from;
         this._query = args.query;
+        this._context = typeof args.context === 'string' ? Buffer.from(args.context) : args.context;
         this._curPage = [];
 
         this.key = args.key;
@@ -200,12 +241,19 @@ export class PaginationResponse<T = AttributeMap> {
         return this.clone({ limit });
     }
 
-    private async ensureResolvedKey(): Promise<CipherKey> {
-        if (!this._resolvedKey) this._resolvedKey = await this.key();
+    private async ensureResolvedKey(): Promise<Keys> {
+        if (!this._resolvedKey) {
+            const key = await (typeof this.key === 'function' ? this.key() : this.key);
+            this._resolvedKey = {
+                encKey: createHmac('sha256', key).update(Buffer.from([1])).digest(),
+                sigKey: createHmac('sha256', key).update(Buffer.from([2])).digest(),
+            };
+        }
         return this._resolvedKey;
     }
 
-    /** Token to resume query operation from the current position. The token is generated from the `LastEvaluatedKey`
+    /**
+     * Token to resume query operation from the current position. The token is generated from the `LastEvaluatedKey`
      * attribute provided by DynamoDB and then AES256 encrypted such that it can safely be provided to an
      * untrustworthy client (such as a user browser or mobile app). The token is Base64 URL encoded which means that
      * it only contains URL safe characters and does not require further encoding.
@@ -216,12 +264,17 @@ export class PaginationResponse<T = AttributeMap> {
      * execution (NoSQL injection).
      * 
      * The length of the token depends on the length of the values for the partition and sort key of the table
-     * or index that you are querying. The token length is at least 64 characters.
+     * or index that you are querying. The token length is at least 42 characters.
      */
     get nextToken(): string | undefined {
         if (!this._nextKey) return undefined;
         if (!this._resolvedKey) throw new Error('Encryption key is not resolved yet');
-        return encodeKey(this._nextKey, this._resolvedKey);
+        return encodeKey(this._nextKey, this._resolvedKey, this._context);
+    }
+
+    /** Returns true if all items for this query have been returned from DynamoDB. */
+    get finished(): boolean {
+        return this._done;
     }
 
 
@@ -230,7 +283,6 @@ export class PaginationResponse<T = AttributeMap> {
         if (index === undefined) {
             key = this.schema;
         } else {
-            const prefix = index ? index.split('.')[0] : '';
             key = typeof this.indexes === 'function' ? this.indexes(index) : this.indexes[index];
         }
 
@@ -285,7 +337,7 @@ export class PaginationResponse<T = AttributeMap> {
 
     async* [Symbol.asyncIterator](): AsyncGenerator<T, void, void> {
         const { _limit: limit, _from: from, _filter: filter, _query: query } = this;
-        if (from && !this._nextKey) this._nextKey = decodeKey(from, await this.ensureResolvedKey());
+        if (from && !this._nextKey) this._nextKey = decodeKey(from, await this.ensureResolvedKey(), this._context);
         loop: do {
             const items = await this.getItems();
             while (items.length) {
@@ -300,8 +352,8 @@ export class PaginationResponse<T = AttributeMap> {
             // prefer LastEvaluatedKey over our manually built key. If there are query filters involved
             // then DynamoDB might have progressed much further and the LastEvaluatedKey will not be
             // the key of the last item we saw but items that were skipped due to the filter expression.
-            this._nextKey = this._lastEvaluatedKey;
-            if (!this._nextKey) break;
+            if (this._lastEvaluatedKey) this._nextKey = this._lastEvaluatedKey;
+            else break;
         } while (this.count < limit);
     }
 }
@@ -313,9 +365,9 @@ type DynamoDBDocumentClientV2 = {
 };
 
 /**
- * ## QueryPaginatorOptions
+ * ## PaginatorOptions
  */
-export interface QueryPaginatorOptions {
+export interface PaginatorOptions {
     /**
      * A 32-byte encryption key (e.g. `crypto.randomBytes(32)`). The `key` parameter also
      * accepts a Promise that resolves to a key or a function that resolves to a Promise of a key.
@@ -352,6 +404,15 @@ export interface PaginateQueryOptions<T extends AttributeMap> {
     from?: string;
     /** Filter results by a predicate function */
     filter?: (arg: AttributeMap) => arg is T;
+    /**
+     * The context defines the additional authenticated data (AAD) that is used to generate the signature
+     * for the pagination token. It is optional but recommended because it adds an additional layer of
+     * authentication to the pagination token. Pagination token will be tied to the context and replaying
+     * them in other contexts will fail. Good examples for the context are a user ID or a session ID concatenated
+     * with the purpose of the query, such as `ListPets`. The context cannot be extracted from the pagination
+     * token and can therefore contain sensitive data.
+     */
+    context?: Buffer | string;
 }
 
 type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : never;
@@ -365,21 +426,21 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  * 
  * Features:
  *   * Supports Binary and String key types
- *   * Generates AES256 encrypted pagination tokens
+ *   * Generates AES256 encrypted and authenticated pagination tokens
  *   * Works with TypeScript type guards natively
  *   * Ensures a minimum number of items when using a `FilterExpression`
  *   * Compatible with AWS SDK v2 and v3
  * 
- * Pagination in NoSQL stores such as DynamoDB can be challenging at times. This
- * library aims at providing a developer friendly interface around the DynamoDB `Query` API. It also
- * provides a secure way of sharing a pagination token with an untrustworthy client (like the browser
- * or a mobile app) without disclosing potentially sensitive data and protecting the integrity of the token.
- * 
+ * Pagination in NoSQL stores such as DynamoDB can be challenging. This
+ * library provides a developer friendly interface around the DynamoDB `Query` and `Scan` APIs.
+ * It generates and encrypted and authenticated pagination token that can be shared with an untrustworthy
+ * client (like the browser or a mobile app) without disclosing potentially sensitive data and protecting
+ * the integrity of the token.
  * 
  * **Why is the pagination token encrypted?**
  * 
  * When researching pagination with DynamoDB, you will come across blog posts and libraries that recommend
- * to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command). This is dangerous!
+ * to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command). **This is dangerous!**
  * 
  * The token is sent to a client which can happily decode the token, look at the values for the
  * partition and sort key and even modify the token, making the application vulnerable to NoSQL injections.
@@ -390,7 +451,7 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  * ## Usage
  * 
  * ```typescript
- * import { QueryPaginator } from '@emdgroup/dynamodb-paginator';
+ * import { Paginator } from '@emdgroup/dynamodb-paginator';
  * import { DynamoDB } from '@aws-sdk/client-dynamodb';
  * import { DynamoDBDocument } from '@aws-sdk/lib-dynamodb';
  * 
@@ -400,7 +461,7 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  * // persist the key in the SSM parameter store or similar
  * const key = crypto.randomBytes(32);
  * 
- * const paginateQuery = QueryPaginator.create({
+ * const paginateQuery = Paginator.createQuery({
  *   key,
  *   client,
  * });
@@ -461,14 +522,14 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  * ```
  * 
  * 
- * ## QueryPaginator
+ * ## Paginator
  * 
- * The `QueryPaginator` class is a factory for the [`PaginationResponse`](#PaginationResponse) object. This class
+ * The `Paginator` class is a factory for the [`PaginationResponse`](#PaginationResponse) object. This class
  * is instantiated with the 32-byte encryption key and the DynamoDB document client (versions
  * 2 and 3 of the AWS SDK are supported).
  * 
  * ```typescript
- * const paginateQuery = QueryPaginator.create({
+ * const paginateQuery = Paginator.createQuery({
  *   key: () => Promise.resolve(crypto.randomBytes(32)),
  *   client: documentClient,
  * });
@@ -477,14 +538,14 @@ type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : nev
  * To create a paginator over a scan operation, use `createScan`.
  * 
  * ```typescript
- * const paginateQuery = QueryPaginator.createScan({
+ * const paginateScan = Paginator.createScan({
  *   key: () => Promise.resolve(crypto.randomBytes(32)),
  *   client: documentClient,
  * });
  * ```
  */
 
-export class QueryPaginator {
+export class Paginator {
     readonly key;
     readonly client;
     readonly schema;
@@ -496,7 +557,7 @@ export class QueryPaginator {
      * Use the static factory function [`create()`](#create) instead of the constructor.
      */
 
-    constructor(args: QueryPaginatorOptions) {
+    constructor(args: PaginatorOptions) {
         this.key = args.key;
         this.client = args.client;
         this.schema = args.schema;
@@ -512,16 +573,16 @@ export class QueryPaginator {
      * Returns a function that accepts a DynamoDB Query command and return an instance of `PaginationResponse`.
      */
 
-    public static create(args: QueryPaginatorOptions): <T extends AttributeMap>(query: QueryCommandInput, opts?: PaginateQueryOptions<T>) => PaginationResponse<T> {
-        const instance = new QueryPaginator(args);
+    public static createQuery(args: PaginatorOptions): <T extends AttributeMap>(query: QueryCommandInput, opts?: PaginateQueryOptions<T>) => PaginationResponse<T> {
+        const instance = new Paginator(args);
         return instance.paginateQuery.bind(instance);
     }
 
     /**
      * Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
      */
-    public static createScan(args: QueryPaginatorOptions): <T extends AttributeMap>(scan: ScanCommandInput, opts?: PaginateQueryOptions<T>) => PaginationResponse<T> {
-        const instance = new QueryPaginator(args);
+    public static createScan(args: PaginatorOptions): <T extends AttributeMap>(scan: ScanCommandInput, opts?: PaginateQueryOptions<T>) => PaginationResponse<T> {
+        const instance = new Paginator(args);
         return instance.paginateScan.bind(instance);
     }
 

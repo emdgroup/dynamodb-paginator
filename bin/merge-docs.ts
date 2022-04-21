@@ -3,8 +3,8 @@ import { readFileSync, writeFileSync, readdirSync } from 'fs';
 function run() {
     const readme: string[] = [];
     for (const file of [
-        'QueryPaginator.md',
-        'QueryPaginatorOptions.md',
+        'Paginator.md',
+        'PaginatorOptions.md',
         'PaginationResponse.md',
         'PaginateQueryOptions.md',
     ]) {
