@@ -271,25 +271,7 @@ items after the end of the query is reached or the provided [`limit`](#limit) pa
 
 | Name | Type |
 | :------ | :------ |
-| `T` | `AttributeMap` |
-
-## Constructors
-
-### constructor
-
-• **new PaginationResponse**<`T`\>(`args`)
-
-#### Type parameters
-
-| Name | Type |
-| :------ | :------ |
-| `T` | `AttributeMap` |
-
-#### Parameters
-
-| Name | Type |
-| :------ | :------ |
-| `args` | `PaginationResponseOptions`<`T`\> |
+| `T` | extends `AttributeMap` = `AttributeMap` |
 
 ## Properties
 
@@ -514,6 +496,28 @@ token and can therefore contain sensitive data.
 
 ___
 
+### filter
+
+• `Optional` **filter**: (`arg`: `AttributeMap`) => arg is T
+
+#### Type declaration
+
+▸ (`arg`): arg is T
+
+Filter results by a predicate function
+
+##### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `arg` | `AttributeMap` |
+
+##### Returns
+
+arg is T
+
+___
+
 ### from
 
 • `Optional` **from**: `string`
@@ -527,21 +531,3 @@ ___
 • `Optional` **limit**: `number`
 
 Limit the number of results to `limit`. Will return at least `limit` results even when using FilterExpressions.
-
-## Methods
-
-### filter
-
-▸ `Optional` **filter**(`arg`): arg is T
-
-Filter results by a predicate function
-
-#### Parameters
-
-| Name | Type |
-| :------ | :------ |
-| `arg` | `AttributeMap` |
-
-#### Returns
-
-arg is T

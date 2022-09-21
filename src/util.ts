@@ -1,13 +1,8 @@
-import * as https from 'https';
 import { randomBytes } from 'crypto';
 
 import { strict as assert } from 'assert';
 
 export { assert };
-
-const agent = new https.Agent({
-    keepAlive: true,
-});
 
 export function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
