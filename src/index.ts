@@ -5,7 +5,7 @@ import { QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient as DynamoDBDocumentClientV3, QueryCommandInput, QueryCommandOutput, ScanCommandInput, ScanCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { NativeAttributeValue } from '@aws-sdk/util-dynamodb';
 
-import { b64uDecode, b64uEncode, uInt16Buffer } from './util';
+import { b64uDecode, b64uEncode, uInt16Buffer } from './util.js';
 
 export type AttributeMap = { [key: string]: NativeAttributeValue };
 
@@ -18,7 +18,7 @@ interface Keys {
 
 /**
  * @private
- * A DynamoDB key { PK: abc, SK: cdef } is encoded as follows
+ * A DynamoDB key `{ PK: abc, SK: cdef }` is encoded as follows
  * 'S' + 1 byte (length of "PK") + "PK" + 2 bytes (length of "abc") + "abc"
  * 'S' + 1 byte (length of "SK") + "SK" + 2 bytes (length of "cdef") + "cdef"
  */
@@ -105,7 +105,7 @@ export interface PaginationResponseOptions<T extends AttributeMap> extends Pagin
  * 
  */
 
-export class PaginationResponse<T = AttributeMap> {
+export class PaginationResponse<T extends AttributeMap = AttributeMap> {
     /** Number of items yielded */
     count: number;
     /** Number of items scanned by DynamoDB */
@@ -212,7 +212,7 @@ export class PaginationResponse<T = AttributeMap> {
         return undefined;
     }
 
-    private clone<K>(args: Partial<PaginationResponseOptions<K>>): PaginationResponse<K | T> {
+    private clone<K extends AttributeMap>(args: Partial<PaginationResponseOptions<K>>): PaginationResponse<K | T> {
         const { _limit: limit, _from: from, _query: query, _filter: filter, client, key, method } = this;
         return new PaginationResponse<K | T>({
             client,
@@ -415,7 +415,7 @@ export interface PaginateQueryOptions<T extends AttributeMap> {
     context?: Buffer | string;
 }
 
-type PredicateFor<T> = T extends (arg: AttributeMap) => arg is infer K ? K : never;
+type PredicateFor<T> = T extends (arg: any) => arg is infer K ? K : never;
 
 /**
  * [![Apache License](https://img.shields.io/github/license/emdgroup/dynamodb-paginator.svg?style=flat-square)](https://github.com/emdgroup/dynamodb-paginator/blob/master/LICENSE)

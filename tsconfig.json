@@ -1,9 +1,11 @@
 {
-  "extends": "@tsconfig/node12/tsconfig.json",
+  "extends": "@tsconfig/node14/tsconfig.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist",
-    "declaration": true
+    "outDir": "dist/esm",
+    "declaration": true,
+    "moduleResolution": "node",
+    "module": "esnext"
   },
   "include": ["src/index.ts", "src/util.ts"]
 }
