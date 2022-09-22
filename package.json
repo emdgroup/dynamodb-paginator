@@ -1,13 +1,13 @@
 {
   "name": "@emdgroup/dynamodb-paginator",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "main": "dist/cjs/index.js",
   "exports": {
     "import": "./dist/esm/index.js",
     "require": "./dist/cjs/index.js"
   },
   "types": "dist/cjs/index.d.ts",
-  "type": "module",
+  "type": "commonjs",
   "repository": "https://github.com/emdgroup/dynamodb-paginator.git",
   "author": "Moritz Onken <onken@netcubed.de>",
   "license": "Apache-2.0",
@@ -45,7 +45,7 @@
     "build": "tsc && tsc --module commonjs --outDir dist/cjs",
     "docs": "yarn --silent docs:build && yarn --silent docs:merge",
     "docs:build": "rm -rf docs README.md && yarn --silent typedoc --hideInPageTOC --excludeNotDocumented --disableSources --theme github-wiki src/index.ts",
-    "docs:merge": "node --loader=ts-node/esm bin/merge-docs.ts",
+    "docs:merge": "node --loader=ts-node/esm bin/merge-docs.mts",
     "test": "mocha --bail --watch-files '**/*.ts' --extension ts --timeout 60000 'src/**/*.spec.ts'"
   }
 }
