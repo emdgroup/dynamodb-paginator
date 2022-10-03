@@ -2,7 +2,7 @@ import { DynamoDB, CreateTableCommandInput } from '@aws-sdk/client-dynamodb';
 import { ServiceException } from '@aws-sdk/smithy-client';
 import { randomBytes } from 'crypto';
 import { promises as fs } from 'fs';
-import { sleep } from './util.js';
+import { sleep } from './util';
 import { DynamoDBDocument } from '@aws-sdk/lib-dynamodb';
 
 export const ddb = new DynamoDB({});

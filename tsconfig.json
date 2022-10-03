@@ -2,10 +2,9 @@
   "extends": "@tsconfig/node14/tsconfig.json",
   "compilerOptions": {
     "rootDir": "src",
-    "outDir": "dist/esm",
+    "outDir": "dist/cjs",
     "declaration": true,
     "moduleResolution": "node",
-    "module": "esnext"
   },
   "include": ["src/index.ts", "src/util.ts"]
 }

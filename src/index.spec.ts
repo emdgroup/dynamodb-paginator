@@ -1,8 +1,8 @@
 import { strict as assert } from 'assert';
 import { randomBytes } from 'crypto';
-import { createTestTable, docClient } from './testing.js';
-import { encodeKey, decodeKey, Paginator, AttributeMap } from './index.js';
-import { b64uDecode } from './util.js';
+import { createTestTable, docClient } from './testing';
+import { encodeKey, decodeKey, Paginator, AttributeMap } from './index';
+import { b64uDecode } from './util';
 
 function createKey(pk: string[], sk: string[]): { PK: string, SK: string } {
     return {

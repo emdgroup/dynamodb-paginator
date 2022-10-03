@@ -42,10 +42,10 @@
   },
   "scripts": {
     "prepack": "yarn docs && rm -rf dist && yarn build",
-    "build": "tsc && tsc --module commonjs --outDir dist/cjs",
+    "build": "tsc && tsc --module esnext --outDir dist/esm",
     "docs": "yarn --silent docs:build && yarn --silent docs:merge",
     "docs:build": "rm -rf docs README.md && yarn --silent typedoc --hideInPageTOC --excludeNotDocumented --disableSources --theme github-wiki src/index.ts",
-    "docs:merge": "node --loader=ts-node/esm bin/merge-docs.mts",
+    "docs:merge": "ts-node bin/merge-docs.ts",
     "test": "mocha --bail --watch-files '**/*.ts' --extension ts --timeout 60000 'src/**/*.spec.ts'"
   }
 }

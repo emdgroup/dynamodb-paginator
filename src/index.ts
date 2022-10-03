@@ -5,7 +5,7 @@ import { QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient as DynamoDBDocumentClientV3, QueryCommandInput, QueryCommandOutput, ScanCommandInput, ScanCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { NativeAttributeValue } from '@aws-sdk/util-dynamodb';
 
-import { b64uDecode, b64uEncode, uInt16Buffer } from './util.js';
+import { b64uDecode, b64uEncode, uInt16Buffer } from './util';
 
 export type AttributeMap = { [key: string]: NativeAttributeValue };
 
