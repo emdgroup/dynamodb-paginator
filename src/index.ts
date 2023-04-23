@@ -343,7 +343,11 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
             while (items.length) {
                 const item = items.shift();
                 if (!item) continue;
-                this._nextKey = this.buildLastEvaluatedKey(item, query.IndexName);
+                this._nextKey = this.buildLastEvaluatedKey(item);
+                if (query.IndexName) this._nextKey = {
+                    ...this._nextKey,
+                    ...this.buildLastEvaluatedKey(item, query.IndexName),
+                };
                 if (filter && !filter(item)) continue;
                 this.count += 1;
                 yield item as T;
