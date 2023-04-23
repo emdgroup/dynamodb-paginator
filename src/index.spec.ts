@@ -147,11 +147,19 @@ describe('aws', () => {
             assert.equal(paginator.scannedCount, 20);
         });
 
-        it('nextToken', async () => {
+        [null, 'GSI1.1'].map((idx) => it(idx ? 'nextToken with index' : 'nextToken', async () => {
+            // give index some time to update
+            if (idx) await new Promise((resolve) => setTimeout(resolve, 1000));
             const paginator = ({ from, context }: { from?: string, context?: string } = {}) => paginateQuery({
                 TableName: TABLE_NAME,
-                KeyConditionExpression: 'PK = :pk',
-                FilterExpression: 'GSI1SK >= :sk',
+                ...idx ? {
+                    IndexName: 'GSI1.1',
+                    KeyConditionExpression: 'GSI1PK = :pk',
+                    FilterExpression: 'SK >= :sk',
+                } : {
+                    KeyConditionExpression: 'PK = :pk',
+                    FilterExpression: 'GSI1SK >= :sk',
+                },
                 ExpressionAttributeValues: {
                     ':pk': 'p:',
                     ':sk': items[4].SK,
@@ -184,7 +192,7 @@ describe('aws', () => {
 
             const pageCtx = paginator({ from: page1.nextToken, context: 'foobar' });
             await assert.rejects(() => pageCtx.all(), { name: 'TokenError' });
-        });
+        }).retries(10));
 
         it('predicate', async () => {
             type Foo = { PK: string; SK: string };
