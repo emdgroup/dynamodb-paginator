@@ -213,7 +213,7 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
     }
 
     private clone<K extends AttributeMap>(args: Partial<PaginationResponseOptions<K>>): PaginationResponse<K | T> {
-        const { _limit: limit, _from: from, _query: query, _filter: filter, client, key, method } = this;
+        const { _limit: limit, _from: from, _query: query, _filter: filter, client, key, method, schema, indexes } = this;
         return new PaginationResponse<K | T>({
             client,
             key,
@@ -222,6 +222,8 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
             from,
             limit,
             method,
+            schema,
+            indexes,
             ...args,
         });
     }
