@@ -1,6 +1,6 @@
 {
   "name": "@emdgroup/dynamodb-paginator",
-  "version": "2.1.2",
+  "version": "2.1.4",
   "main": "dist/cjs/index.js",
   "exports": {
     "import": "./dist/esm/index.js",

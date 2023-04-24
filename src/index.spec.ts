@@ -109,6 +109,21 @@ describe('aws', () => {
             assert.equal(paginator.requestCount, 13);
         });
 
+        it('finished', async () => {
+            const paginator = paginateQuery({
+                TableName: TABLE_NAME,
+                KeyConditionExpression: 'PK = :pk',
+                ExpressionAttributeValues: {
+                    ':pk': 'p:',
+                },
+            }, { limit: 10 });
+
+            const all = await paginator.all();
+            assert.equal(all.length, 10);
+            assert.equal(paginator.finished, false);
+            assert.equal(paginator.requestCount, 1);
+        });
+
         it('filter expression with many empty responses', async () => {
             const paginator = paginateQuery({
                 TableName: TABLE_NAME,
