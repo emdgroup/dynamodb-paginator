@@ -276,7 +276,7 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
 
     /** Returns true if all items for this query have been returned from DynamoDB. */
     get finished(): boolean {
-        return this._done;
+        return this._done && this._curPage.length === 0;
     }
 
 
