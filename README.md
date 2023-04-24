@@ -10,6 +10,7 @@ Features:
   * Works with TypeScript type guards natively
   * Ensures a minimum number of items when using a `FilterExpression`
   * Compatible with AWS SDK v2 and v3
+  * Supports pagination over segmented [parallel scans](#parallel-scans)
 
 Pagination in NoSQL stores such as DynamoDB can be challenging. This
 library provides a developer friendly interface around the DynamoDB `Query` and `Scan` APIs.
@@ -24,6 +25,19 @@ to JSON-encode the `LastEvaluatedKey` attribute (or even the whole query command
 
 The token is sent to a client which can happily decode the token, look at the values for the
 partition and sort key and even modify the token, making the application vulnerable to NoSQL injections.
+
+**How is the pagination token encrypted?**
+
+The encryption key passed to the paginator is used to derive an encryption and a signing key using an HMAC.
+
+The `LastEvaluatedKey` attribute is first flattened by length-encoding its datatypes and values. The
+encoded key is then encrypted with the encryption key using AES-256 in CBC mode with a randomly generated IV.
+
+The additional authenticated data (AAD), the IV, the ciphertext and an int64 of the length of the AAD are
+concatenated to form the *message* to be signed.
+
+The encrypted and signed pagination token is then returned by concatenating the IV, ciphertext and the
+first 16 bytes of the HMAC-SHA256 of the *message* using the signing key.
 
 > "Dance like nobody is watching. Encrypt like everyone is."
 > -- Werner Vogels
@@ -47,7 +61,7 @@ const paginateQuery = Paginator.createQuery({
 });
 
 const paginator = paginateQuery({
-  TableName: 'mytable',
+  TableName: 'MyTable',
   KeyConditionExpression: 'PK = :pk',
   ExpressionAttributeValues: {
       ':pk': 'U#ABC',
@@ -104,7 +118,7 @@ for await (const user of paginator.filter(isUser)) {
 ## Paginator
 
 The `Paginator` class is a factory for the [`PaginationResponse`](#PaginationResponse) object. This class
-is instantiated with the 32-byte encryption key and the DynamoDB document client (versions
+is instantiated with a 32-byte key and the DynamoDB document client (versions
 2 and 3 of the AWS SDK are supported).
 
 ```typescript
@@ -123,6 +137,40 @@ const paginateScan = Paginator.createScan({
 });
 ```
 
+### Parallel Scans
+
+This library also supports pagination over segmented parallel scans. This is useful when you have a large
+table and want to parallelize the scan operation to reduce the time it takes to scan the whole table.
+
+To create a paginator over a segmented scan operation, use `createParallelScan`.
+
+```typescript
+const paginateParallelScan = Paginator.createParallelScan({
+  key: () => Promise.resolve(crypto.randomBytes(32)),
+  client: documentClient,
+});
+```
+
+Then, create a paginator and pass the `segments` parameter.
+
+```ts
+const paginator = paginateParallelScan({
+  TableName: 'MyTable',
+  Limit: 250,
+}, { segments: 10 });
+
+await paginator.all();
+```
+
+The scan will be executed in parallel over 10 segments. The paginator will return the items in the order
+they are returned by DynamoDB which might deliver items from different segments out of order. Refer to the
+following waterfall diagram for an example. The parallel scan was executed over a high-latency connection
+to better illustrate the variability in the requests and responses. Even though the `Limit` is set to 250,
+DynamoDB will return on occasion less than 250 items per segment. The paginator will continue to request
+items until all segments have been exhausted.
+
+![parallel scan](img/waterfall.svg)
+
 ## Constructors
 
 ### constructor
@@ -138,6 +186,45 @@ Use the static factory function [`create()`](#create) instead of the constructor
 | `args` | [`PaginatorOptions`](#PaginatorOptions) |
 
 ## Methods
+
+### createParallelScan
+
+▸ `Static` **createParallelScan**(`args`): <T\>(`scan`: `ScanCommandInput`, `opts`: [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\> & { `segments`: `number`  }) => `ParallelPaginationResponse`<`T`\>
+
+Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
+
+#### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `args` | [`PaginatorOptions`](#PaginatorOptions) |
+
+#### Returns
+
+`fn`
+
+▸ <`T`\>(`scan`, `opts`): `ParallelPaginationResponse`<`T`\>
+
+Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
+
+##### Type parameters
+
+| Name | Type |
+| :------ | :------ |
+| `T` | extends `AttributeMap` |
+
+##### Parameters
+
+| Name | Type |
+| :------ | :------ |
+| `scan` | `ScanCommandInput` |
+| `opts` | [`PaginateQueryOptions`](#PaginateQueryOptions)<`T`\> & { `segments`: `number`  } |
+
+##### Returns
+
+`ParallelPaginationResponse`<`T`\>
+
+___
 
 ### createQuery
 
@@ -235,7 +322,7 @@ ___
 Object that resolves an index name to the partition and sort key for that index.
 Also accepts a function that builds the names based on the index name.
 
-Defaults to ```(index) => [`${index}PK`, `${index}PK`]```.
+Defaults to ```(index) => [`${index}PK`, `${index}SK`]```.
 
 ___
 
@@ -246,7 +333,7 @@ ___
 A 32-byte encryption key (e.g. `crypto.randomBytes(32)`). The `key` parameter also
 accepts a Promise that resolves to a key or a function that resolves to a Promise of a key.
 
-If a function is passed, that function is only called once. The function is called concurrently
+If a function is passed, that function is lazily called only once. The function is called concurrently
 with the first query request to DynamoDB to reduce the overall latency for the first query. The
 key is cached and the function is not called again.
 
@@ -275,37 +362,25 @@ items after the end of the query is reached or the provided [`limit`](#limit) pa
 
 ## Properties
 
-### consumedCapacity
-
-• **consumedCapacity**: `number`
-
-Total consumed capacity for query
-
-___
-
 ### count
 
 • **count**: `number`
 
 Number of items yielded
 
-___
-
-### requestCount
-
-• **requestCount**: `number`
-
-Number of requests made to DynamoDB
-
-___
-
-### scannedCount
-
-• **scannedCount**: `number`
-
-Number of items scanned by DynamoDB
-
 ## Accessors
+
+### consumedCapacity
+
+• `get` **consumedCapacity**(): `number`
+
+Total consumed capacity for query
+
+#### Returns
+
+`number`
+
+___
 
 ### finished
 
@@ -339,6 +414,30 @@ or index that you are querying. The token length is at least 42 characters.
 #### Returns
 
 `undefined` \| `string`
+
+___
+
+### requestCount
+
+• `get` **requestCount**(): `number`
+
+Number of requests made to DynamoDB
+
+#### Returns
+
+`number`
+
+___
+
+### scannedCount
+
+• `get` **scannedCount**(): `number`
+
+Number of items scanned by DynamoDB
+
+#### Returns
+
+`number`
 
 ## Methods
 
@@ -398,27 +497,39 @@ ___
 
 ### from
 
-▸ **from**(`nextToken`): [`PaginationResponse`](#PaginationResponse)<`T`\>
+▸ **from**<`L`\>(`nextToken`): `L`
 
 Start returning results starting from `nextToken`
+
+#### Type parameters
+
+| Name | Type |
+| :------ | :------ |
+| `L` | extends [`PaginationResponse`](#PaginationResponse)<`T`, `L`\> |
 
 #### Parameters
 
 | Name | Type |
 | :------ | :------ |
-| `nextToken` | `string` |
+| `nextToken` | `undefined` \| `string` |
 
 #### Returns
 
-[`PaginationResponse`](#PaginationResponse)<`T`\>
+`L`
 
 ___
 
 ### limit
 
-▸ **limit**(`limit`): [`PaginationResponse`](#PaginationResponse)<`T`\>
+▸ **limit**<`L`\>(`limit`): `L`
 
 Limit the number of results to `limit`. Will return at least `limit` results even when using FilterExpressions.
+
+#### Type parameters
+
+| Name | Type |
+| :------ | :------ |
+| `L` | extends [`PaginationResponse`](#PaginationResponse)<`T`, `L`\> |
 
 #### Parameters
 
@@ -428,7 +539,7 @@ Limit the number of results to `limit`. Will return at least `limit` results eve
 
 #### Returns
 
-[`PaginationResponse`](#PaginationResponse)<`T`\>
+`L`
 
 ___
 

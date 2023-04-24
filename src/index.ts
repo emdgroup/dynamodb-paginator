@@ -5,7 +5,7 @@ import { QueryCommand, ScanCommand } from '@aws-sdk/lib-dynamodb';
 import type { DynamoDBDocumentClient as DynamoDBDocumentClientV3, QueryCommandInput, QueryCommandOutput, ScanCommandInput, ScanCommandOutput } from '@aws-sdk/lib-dynamodb';
 import type { NativeAttributeValue } from '@aws-sdk/util-dynamodb';
 
-import { b64uDecode, b64uEncode, uInt16Buffer } from './util';
+import { b64uDecode, b64uEncode, uInt16Buffer, uInt32Buffer } from './util';
 
 export type AttributeMap = { [key: string]: NativeAttributeValue };
 
@@ -23,13 +23,16 @@ interface Keys {
  * 'S' + 1 byte (length of "SK") + "SK" + 2 bytes (length of "cdef") + "cdef"
  */
 
-export function encodeKey(key: AttributeMap, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): string {
+export function flattenKey(key: AttributeMap): Buffer {
     const parts = Object.entries(key).filter(([, v]) => v !== undefined).map(([k, v]) => [
         Buffer.from(Buffer.isBuffer(v) ? 'B' : 'S'),
         Buffer.from([k.length]), Buffer.from(k),
         uInt16Buffer(v.length), Buffer.from(v),
     ]).flat();
-    const plaintext = Buffer.concat(parts);
+    return Buffer.concat(parts);
+}
+
+export function encodeKey(plaintext: Buffer, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): string {
     const iv = randomBytes(16);
     const cipher = createCipheriv('aes-256-cbc', encKey, iv);
     const cipherText = Buffer.concat([iv, cipher.update(plaintext), cipher.final()]);
@@ -48,23 +51,7 @@ export class TokenError extends Error {
     }
 }
 
-function _decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): AttributeMap {
-    const encrypted = b64uDecode(token);
-    assert(token.length > 48 && encrypted.length % 16 === 0);
-    const iv = encrypted.slice(0, 16);
-    const cipherText = encrypted.slice(0, -16);
-    const sig = encrypted.slice(-16);
-    const toSign = Buffer.concat([aad, cipherText, Buffer.alloc(8)]);
-    toSign.writeUint32BE(aad.length, toSign.length - 4);
-    assert(timingSafeEqual(
-        createHmac('sha256', sigKey).update(toSign).digest().slice(0, 16),
-        sig,
-    ));
-    const decipher = createDecipheriv('aes-256-cbc', encKey, iv);
-    const buf = Buffer.concat([
-        decipher.update(cipherText.slice(16)),
-        decipher.final(),
-    ]);
+export function unflattenKey(buf: Buffer): AttributeMap {
     const key: AttributeMap = {};
     let pos = 0;
     while (pos < buf.length) {
@@ -80,7 +67,26 @@ function _decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(
     return key;
 }
 
-export function decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): AttributeMap {
+function _decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): Buffer {
+    const encrypted = b64uDecode(token);
+    assert(token.length > 48 && encrypted.length % 16 === 0);
+    const iv = encrypted.slice(0, 16);
+    const cipherText = encrypted.slice(0, -16);
+    const sig = encrypted.slice(-16);
+    const toSign = Buffer.concat([aad, cipherText, Buffer.alloc(8)]);
+    toSign.writeUint32BE(aad.length, toSign.length - 4);
+    assert(timingSafeEqual(
+        createHmac('sha256', sigKey).update(toSign).digest().slice(0, 16),
+        sig,
+    ));
+    const decipher = createDecipheriv('aes-256-cbc', encKey, iv);
+    return Buffer.concat([
+        decipher.update(cipherText.slice(16)),
+        decipher.final(),
+    ]);
+}
+
+export function decodeKey(token: string, { encKey, sigKey }: Keys, aad = Buffer.alloc(0)): Buffer {
     try {
         return _decodeKey(token, { encKey, sigKey }, aad);
     } catch (err) {
@@ -92,6 +98,10 @@ export interface PaginationResponseOptions<T extends AttributeMap> extends Pagin
     query: QueryCommandInput | ScanCommandInput;
     key: () => Promise<CipherKey>;
     method: 'scan' | 'query';
+}
+
+export interface ParallelPaginationResponseOptions<T extends AttributeMap> extends PaginationResponseOptions<T> {
+    segments: number;
 }
 
 /**
@@ -108,37 +118,34 @@ export interface PaginationResponseOptions<T extends AttributeMap> extends Pagin
 export class PaginationResponse<T extends AttributeMap = AttributeMap> {
     /** Number of items yielded */
     count: number;
-    /** Number of items scanned by DynamoDB */
-    scannedCount: number;
-    /** Number of requests made to DynamoDB */
-    requestCount: number;
-    /** Total consumed capacity for query */
-    consumedCapacity: number;
 
-    private _nextKey?: AttributeMap;
+    protected _nextKey?: AttributeMap;
     private _done: boolean;
-    private _resolvedKey?: Keys;
-    private _curPage: AttributeMap[];
+    private _consumedCapacity: number;
+    private _requestCount: number;
+    private _scannedCount: number;
+    protected _resolvedKey?: Keys;
+    protected _curPage: AttributeMap[];
     private _lastEvaluatedKey: AttributeMap | undefined;
 
-    private readonly _limit;
-    private readonly _filter;
-    private readonly _from;
-    private readonly _query;
-    private readonly _context;
+    protected readonly _limit;
+    protected readonly _filter;
+    protected readonly _from;
+    protected readonly _query;
+    protected readonly _context;
 
-    private readonly key;
-    private readonly client;
-    private readonly schema;
-    private readonly indexes;
-    private readonly method;
+    protected readonly key;
+    protected readonly client;
+    protected readonly schema;
+    protected readonly indexes;
+    protected readonly method;
 
 
     constructor(args: PaginationResponseOptions<T>) {
-        this.consumedCapacity = 0;
         this.count = 0;
-        this.scannedCount = 0;
-        this.requestCount = 0;
+        this._requestCount = 0;
+        this._consumedCapacity = 0;
+        this._scannedCount = 0;
         this._done = false;
 
         this._limit = args.limit ?? Infinity;
@@ -147,6 +154,8 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
         this._query = args.query;
         this._context = typeof args.context === 'string' ? Buffer.from(args.context) : args.context;
         this._curPage = [];
+
+        this._nextKey = args.query.ExclusiveStartKey;
 
         this.key = args.key;
         this.client = args.client;
@@ -212,13 +221,13 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
         return undefined;
     }
 
-    private clone<K extends AttributeMap>(args: Partial<PaginationResponseOptions<K>>): PaginationResponse<K | T> {
+    protected clone<K extends AttributeMap = T>(args: Partial<PaginationResponseOptions<K>>): PaginationResponse<K> {
         const { _limit: limit, _from: from, _query: query, _filter: filter, client, key, method, schema, indexes } = this;
-        return new PaginationResponse<K | T>({
+        return new PaginationResponse({
             client,
             key,
             query,
-            filter,
+            filter: filter as any,
             from,
             limit,
             method,
@@ -230,20 +239,20 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
 
     /** Filter results by a predicate function */
     filter<K extends AttributeMap>(predicate: (arg: AttributeMap) => arg is K): PaginationResponse<K> {
-        return this.clone({ filter: predicate }) as PaginationResponse<K>;
+        return this.clone({ filter: predicate }) as unknown as PaginationResponse<K>;
     }
 
     /** Start returning results starting from `nextToken` */
-    from(nextToken: string): PaginationResponse<T> {
-        return this.clone({ from: nextToken });
+    from<L extends this>(nextToken: string | undefined): L {
+        return this.clone({ from: nextToken }) as unknown as L;
     }
 
     /** Limit the number of results to `limit`. Will return at least `limit` results even when using FilterExpressions. */
-    limit(limit: number): PaginationResponse<T> {
-        return this.clone({ limit });
+    limit<L extends this>(limit: number): L {
+        return this.clone({ limit }) as unknown as L;
     }
 
-    private async ensureResolvedKey(): Promise<Keys> {
+    protected async ensureResolvedKey(): Promise<Keys> {
         if (!this._resolvedKey) {
             const key = await (typeof this.key === 'function' ? this.key() : this.key);
             this._resolvedKey = {
@@ -271,7 +280,8 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
     get nextToken(): string | undefined {
         if (!this._nextKey) return undefined;
         if (!this._resolvedKey) throw new Error('Encryption key is not resolved yet');
-        return encodeKey(this._nextKey, this._resolvedKey, this._context);
+        const plaintext = flattenKey(this._nextKey);
+        return encodeKey(plaintext, this._resolvedKey, this._context);
     }
 
     /** Returns true if all items for this query have been returned from DynamoDB. */
@@ -279,12 +289,27 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
         return this._done && this._curPage.length === 0;
     }
 
+    /** Number of requests made to DynamoDB */
+    get requestCount(): number {
+        return this._requestCount;
+    }
+
+    /** Number of items scanned by DynamoDB */
+    get scannedCount(): number {
+        return this._scannedCount;
+    }
+
+    /** Total consumed capacity for query */
+    get consumedCapacity(): number {
+        return this._consumedCapacity;
+    }
 
     private buildLastEvaluatedKey(item: AttributeMap, index?: string): AttributeMap {
         let key: [string, string?];
         if (index === undefined) {
             key = this.schema;
         } else {
+
             key = typeof this.indexes === 'function' ? this.indexes(index) : this.indexes[index];
         }
 
@@ -309,10 +334,11 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
         }
     }
 
-    private async getItems(): Promise<AttributeMap[]> {
+    private async _getItems(): Promise<AttributeMap[]> {
         const items = this._curPage;
         if (items.length) return items;
         if (this._done) return [];
+        this._requestCount += 1;
         const [res] = await Promise.all([
             this.query({
                 ...this._query,
@@ -320,13 +346,46 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
             }),
             this.ensureResolvedKey(),
         ]);
-        this.scannedCount += res.ScannedCount || 0;
-        this.requestCount += 1;
-        this.consumedCapacity += res.ConsumedCapacity?.CapacityUnits || 0;
+        this._scannedCount += res.ScannedCount || 0;
+        this._consumedCapacity += res.ConsumedCapacity?.CapacityUnits || 0;
         this._lastEvaluatedKey = res.LastEvaluatedKey;
         if (!this._lastEvaluatedKey) this._done = true;
+        // We don't apply `filter` here because it could be expensive to do so.
+        // We defer filtering to the generator.
         if (res.Items) items.push(...res.Items);
         return items;
+    }
+
+    private _fetching?: Promise<AttributeMap[]>;
+    protected getItems(): Promise<AttributeMap[]> {
+        if (!this._fetching) {
+            this._fetching = this._getItems();
+            this._fetching.finally(() => this._fetching = undefined);
+        }
+        return this._fetching;
+    }
+
+    popItem(): T | undefined {
+        const { _filter: filter, _query: query } = this;
+        const items = this._curPage;
+        const item = items.shift();
+        if (this._lastEvaluatedKey && items.length === 0) {
+            // prefer LastEvaluatedKey over our manually built key. If there are query filters involved
+            // then DynamoDB might have progressed much further and the LastEvaluatedKey will not be
+            // the key of the last item we saw but items that were skipped due to the filter expression.
+            this._nextKey = this._lastEvaluatedKey;
+        } else if (item) {
+            this._nextKey = this.buildLastEvaluatedKey(item);
+            if (query.IndexName) this._nextKey = {
+                ...this._nextKey,
+                ...this.buildLastEvaluatedKey(item, query.IndexName),
+            };
+        }
+        if (!item) return;
+        if (!filter || filter(item)) {
+            this.count += 1;
+            return item as T;
+        }
     }
 
     /**
@@ -338,29 +397,14 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
      */
 
     async* [Symbol.asyncIterator](): AsyncGenerator<T, void, void> {
-        const { _limit: limit, _from: from, _filter: filter, _query: query } = this;
-        if (from && !this._nextKey) this._nextKey = decodeKey(from, await this.ensureResolvedKey(), this._context);
-        loop: do {
-            const items = await this.getItems();
-            while (items.length) {
-                const item = items.shift();
-                if (!item) continue;
-                this._nextKey = this.buildLastEvaluatedKey(item);
-                if (query.IndexName) this._nextKey = {
-                    ...this._nextKey,
-                    ...this.buildLastEvaluatedKey(item, query.IndexName),
-                };
-                if (filter && !filter(item)) continue;
-                this.count += 1;
-                yield item as T;
-                if (this.count === limit) break loop;
-            }
-            // prefer LastEvaluatedKey over our manually built key. If there are query filters involved
-            // then DynamoDB might have progressed much further and the LastEvaluatedKey will not be
-            // the key of the last item we saw but items that were skipped due to the filter expression.
-            if (this._lastEvaluatedKey) this._nextKey = this._lastEvaluatedKey;
-            else break;
-        } while (this.count < limit);
+        const { _limit: limit, _from: from } = this;
+        if (from && !this._nextKey) this._nextKey = unflattenKey(decodeKey(from, await this.ensureResolvedKey(), this._context));
+        do {
+            await this.getItems();
+            const item = this.popItem();
+            if (!item) continue;
+            yield item as T;
+        } while (!this.finished && this.count < limit);
     }
 }
 
@@ -370,6 +414,124 @@ type DynamoDBDocumentClientV2 = {
     scan: (...args: any) => { promise: () => Promise<Omit<ScanCommandOutput, '$metadata'>> }; // v2
 };
 
+export class ParallelPaginationResponse<T extends AttributeMap = AttributeMap> extends PaginationResponse<T> {
+    workers?: PaginationResponse<T>[];
+
+    private segments;
+
+    constructor(args: ParallelPaginationResponseOptions<T>) {
+        super(args);
+        this.segments = args.segments;
+    }
+
+    async peek(): Promise<T | undefined> {
+        throw new Error('Not implemented');
+    }
+
+    /** Filter results by a predicate function */
+    filter<K extends AttributeMap>(predicate: (arg: AttributeMap) => arg is K): ParallelPaginationResponse<K> {
+        return this.clone({ filter: predicate });
+    }
+
+    private parseNextToken(segments: number, from: string, keys: Keys): (AttributeMap | undefined)[] {
+        const plaintext = decodeKey(from, keys, this._context);
+        assert(plaintext.length >= segments * 4);
+        let loc = 0;
+        return Array.from({ length: segments }, (_, i) => {
+            const len = plaintext.readUint32BE(loc);
+            const slice = plaintext.slice(loc + 4, loc + 4 + len);
+            loc += 4 + len;
+            return len ? unflattenKey(slice) : undefined;
+        });
+    }
+
+    get nextToken(): string | undefined {
+        if (!this.workers) return undefined;
+        const plaintext = Buffer.concat(this.workers.map((w) => {
+            const buf = (w as this)._nextKey ? flattenKey((w as any)._nextKey) : Buffer.alloc(0);
+            return Buffer.concat([
+                uInt32Buffer(buf.length),
+                buf,
+            ]);
+        }));
+        // Just to please TypeScript but we guarantee that _resolvedKey has a value if `this.workers` is defined.
+        assert(this._resolvedKey);
+        return encodeKey(plaintext, this._resolvedKey, this._context);
+    }
+
+    get finished(): boolean {
+        return this.workers?.every((w) => w.finished) ?? false;
+    }
+
+    /** Number of requests made to DynamoDB */
+    get requestCount(): number {
+        return this.workers?.reduce((a, w) => a + w.requestCount, 0) || 0;
+    }
+
+    /** Total consumed capacity for query */
+    get scannedCount(): number {
+        return this.workers?.reduce((a, w) => a + w.scannedCount, 0) || 0;
+    }
+
+    /** Number of items scanned by DynamoDB */
+    get consumedCapacity(): number {
+        return this.workers?.reduce((a, w) => a + w.consumedCapacity, 0) || 0;
+    }
+
+    protected clone<K extends AttributeMap = T>(args: Partial<ParallelPaginationResponseOptions<K>>): ParallelPaginationResponse<K> {
+        const { _limit: limit, _from: from, _query: query, _filter: filter, client, key, method, segments } = this;
+        return new ParallelPaginationResponse<K>({
+            client,
+            key,
+            query,
+            filter: filter as any,
+            from,
+            limit,
+            method,
+            segments,
+            ...args,
+        });
+    }
+
+    async* [Symbol.asyncIterator](): AsyncGenerator<T, void, void> {
+        const { _limit: limit, _from } = this;
+        const keys = await this.ensureResolvedKey();
+
+        const startKeys = _from ? this.parseNextToken(this.segments, _from, keys) : [];
+
+        if (!this.workers) {
+            const args: PaginationResponseOptions<T> = { filter: this._filter, query: this._query, key: this.key, method: this.method, client: this.client };
+            this.workers = Array.from({ length: this.segments }, (_, i) => new PaginationResponse({
+                ...args,
+                query: {
+                    ...args.query,
+                    Segment: i,
+                    TotalSegments: this.segments,
+                    ExclusiveStartKey: startKeys[i],
+                },
+                method: 'scan',
+            }));
+        }
+
+        let workers = [...this.workers];
+        loop: do {
+            if (workers.length === 0) break;
+            const [worker, items] = await Promise.race<Promise<[PaginationResponse<T>, AttributeMap[]]>[]>(
+                workers.map((w) => this.getItems.apply(w).then((items) => [w, items])));
+            do {
+                const item = worker.popItem();
+                if (!item) continue;
+                this.count += 1;
+                yield item as T;
+                if (this.count === limit) break loop;
+            } while (items.length);
+
+            if (worker.finished) workers = workers.filter((w) => w !== worker);
+        } while (this.count < limit);
+    }
+}
+
+
 /**
  * ## PaginatorOptions
  */
@@ -378,7 +540,7 @@ export interface PaginatorOptions {
      * A 32-byte encryption key (e.g. `crypto.randomBytes(32)`). The `key` parameter also
      * accepts a Promise that resolves to a key or a function that resolves to a Promise of a key.
      * 
-     * If a function is passed, that function is only called once. The function is called concurrently
+     * If a function is passed, that function is lazily called only once. The function is called concurrently
      * with the first query request to DynamoDB to reduce the overall latency for the first query. The
      * key is cached and the function is not called again.
      */
@@ -395,7 +557,7 @@ export interface PaginatorOptions {
      * Object that resolves an index name to the partition and sort key for that index.
      * Also accepts a function that builds the names based on the index name.
      * 
-     * Defaults to ```(index) => [`${index}PK`, `${index}PK`]```.
+     * Defaults to ```(index) => [`${index}PK`, `${index}SK`]```.
      */
     indexes?: Record<string, [partitionKey: string, sortKey?: string]> | ((index: string) => [partitionKey: string, sortKey?: string]);
 }
@@ -436,6 +598,7 @@ type PredicateFor<T> = T extends (arg: any) => arg is infer K ? K : never;
  *   * Works with TypeScript type guards natively
  *   * Ensures a minimum number of items when using a `FilterExpression`
  *   * Compatible with AWS SDK v2 and v3
+ *   * Supports pagination over segmented [parallel scans](#parallel-scans)
  * 
  * Pagination in NoSQL stores such as DynamoDB can be challenging. This
  * library provides a developer friendly interface around the DynamoDB `Query` and `Scan` APIs.
@@ -450,6 +613,19 @@ type PredicateFor<T> = T extends (arg: any) => arg is infer K ? K : never;
  * 
  * The token is sent to a client which can happily decode the token, look at the values for the
  * partition and sort key and even modify the token, making the application vulnerable to NoSQL injections.
+ * 
+ * **How is the pagination token encrypted?**
+ * 
+ * The encryption key passed to the paginator is used to derive an encryption and a signing key using an HMAC.
+ * 
+ * The `LastEvaluatedKey` attribute is first flattened by length-encoding its datatypes and values. The
+ * encoded key is then encrypted with the encryption key using AES-256 in CBC mode with a randomly generated IV.
+ * 
+ * The additional authenticated data (AAD), the IV, the ciphertext and an int64 of the length of the AAD are
+ * concatenated to form the *message* to be signed.
+ * 
+ * The encrypted and signed pagination token is then returned by concatenating the IV, ciphertext and the
+ * first 16 bytes of the HMAC-SHA256 of the *message* using the signing key.
  * 
  * > "Dance like nobody is watching. Encrypt like everyone is."
  * > -- Werner Vogels
@@ -473,7 +649,7 @@ type PredicateFor<T> = T extends (arg: any) => arg is infer K ? K : never;
  * });
  * 
  * const paginator = paginateQuery({
- *   TableName: 'mytable',
+ *   TableName: 'MyTable',
  *   KeyConditionExpression: 'PK = :pk',
  *   ExpressionAttributeValues: {
  *       ':pk': 'U#ABC',
@@ -531,7 +707,7 @@ type PredicateFor<T> = T extends (arg: any) => arg is infer K ? K : never;
  * ## Paginator
  * 
  * The `Paginator` class is a factory for the [`PaginationResponse`](#PaginationResponse) object. This class
- * is instantiated with the 32-byte encryption key and the DynamoDB document client (versions
+ * is instantiated with a 32-byte key and the DynamoDB document client (versions
  * 2 and 3 of the AWS SDK are supported).
  * 
  * ```typescript
@@ -549,6 +725,42 @@ type PredicateFor<T> = T extends (arg: any) => arg is infer K ? K : never;
  *   client: documentClient,
  * });
  * ```
+ * 
+ * 
+ * ### Parallel Scans
+ * 
+ * This library also supports pagination over segmented parallel scans. This is useful when you have a large
+ * table and want to parallelize the scan operation to reduce the time it takes to scan the whole table.
+ *
+ * To create a paginator over a segmented scan operation, use `createParallelScan`.
+ * 
+ * ```typescript
+ * const paginateParallelScan = Paginator.createParallelScan({
+ *   key: () => Promise.resolve(crypto.randomBytes(32)),
+ *   client: documentClient,
+ * });
+ * ```
+ * 
+ * Then, create a paginator and pass the `segments` parameter.
+ * 
+ * ```ts
+ * const paginator = paginateParallelScan({
+ *   TableName: 'MyTable',
+ *   Limit: 250,
+ * }, { segments: 10 });
+ * 
+ * await paginator.all();
+ * ```
+ * 
+ * The scan will be executed in parallel over 10 segments. The paginator will return the items in the order
+ * they are returned by DynamoDB which might deliver items from different segments out of order. Refer to the
+ * following waterfall diagram for an example. The parallel scan was executed over a high-latency connection
+ * to better illustrate the variability in the requests and responses. Even though the `Limit` is set to 250,
+ * DynamoDB will return on occasion less than 250 items per segment. The paginator will continue to request
+ * items until all segments have been exhausted.
+ * 
+ * ![parallel scan](img/waterfall.svg)
+ * 
  */
 
 export class Paginator {
@@ -570,7 +782,7 @@ export class Paginator {
         this.indexes = args.indexes;
     }
 
-    private async ensureResolvedKey(): Promise<CipherKey> {
+    protected async ensureResolvedKey(): Promise<CipherKey> {
         if (!this._resolvedKey) this._resolvedKey = await (typeof this.key === 'function' ? this.key() : this.key);
         return this._resolvedKey;
     }
@@ -590,6 +802,14 @@ export class Paginator {
     public static createScan(args: PaginatorOptions): <T extends AttributeMap>(scan: ScanCommandInput, opts?: PaginateQueryOptions<T>) => PaginationResponse<T> {
         const instance = new Paginator(args);
         return instance.paginateScan.bind(instance);
+    }
+
+    /**
+     * Returns a function that accepts a DynamoDB Scan command and return an instance of `PaginationResponse`.
+     */
+    public static createParallelScan(args: PaginatorOptions): <T extends AttributeMap>(scan: ScanCommandInput, opts: PaginateQueryOptions<T> & { segments: number }) => ParallelPaginationResponse<T> {
+        const instance = new Paginator(args);
+        return instance.paginateParallelScan.bind(instance);
     }
 
     paginateQuery<T extends AttributeMap>(query: QueryCommandInput, { filter, ...args }: PaginateQueryOptions<T> = {}): PaginationResponse<PredicateFor<typeof filter>> {
@@ -614,6 +834,20 @@ export class Paginator {
             indexes: this.indexes,
             filter,
             query,
+            method: 'scan',
+        });
+    }
+
+    paginateParallelScan<T extends AttributeMap>(query: ScanCommandInput, { filter, segments, ...args }: PaginateQueryOptions<T> & { segments: number }) {
+        return new ParallelPaginationResponse({
+            ...args,
+            client: this.client,
+            key: () => this.ensureResolvedKey(),
+            schema: this.schema,
+            indexes: this.indexes,
+            filter,
+            query,
+            segments,
             method: 'scan',
         });
     }

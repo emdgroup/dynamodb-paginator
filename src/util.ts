@@ -22,6 +22,12 @@ export function uInt16Buffer(value: number): Buffer {
     return buf;
 }
 
+export function uInt32Buffer(value: number): Buffer {
+    const buf = Buffer.alloc(4);
+    buf.writeUInt32BE(value);
+    return buf;
+}
+
 export function createCode(size = 16): Buffer {
     return randomBytes(size);
 }
