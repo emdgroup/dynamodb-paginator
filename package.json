@@ -1,6 +1,6 @@
 {
   "name": "@emdgroup/dynamodb-paginator",
-  "version": "2.1.4",
+  "version": "2.2.0",
   "main": "dist/cjs/index.js",
   "exports": {
     "import": "./dist/esm/index.js",
@@ -14,17 +14,20 @@
   "keywords": [
     "aws",
     "dynamodb",
-    "pagination"
+    "pagination",
+    "scroll",
+    "scan",
+    "query"
   ],
   "files": [
     "dist"
   ],
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.0.0",
-    "@aws-sdk/lib-dynamodb": "^3.0.0",
-    "@aws-sdk/smithy-client": "^3.0.0",
-    "@aws-sdk/types": "^3.0.0",
-    "@aws-sdk/util-dynamodb": "^3.0.0"
+    "@aws-sdk/client-dynamodb": "^3.171.0",
+    "@aws-sdk/lib-dynamodb": "^3.171.0",
+    "@aws-sdk/smithy-client": "^3.171.0",
+    "@aws-sdk/types": "^3.171.0",
+    "@aws-sdk/util-dynamodb": "^3.171.0"
   },
   "devDependencies": {
     "@tsconfig/node14": "^1.0.0",

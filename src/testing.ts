@@ -39,6 +39,7 @@ export function createTestTable(
     });
 
     after(async () => {
+        if (process.env.KEEP_TABLE) return;
         if (!tableExists) await ddb.deleteTable({ TableName: table });
     });
 
