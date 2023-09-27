@@ -305,7 +305,7 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
     }
 
     private buildLastEvaluatedKey(item: AttributeMap, index?: string): AttributeMap {
-        let key: [string, string?];
+        let key: [string, string?, string?];
         if (index === undefined) {
             key = this.schema;
         } else {
@@ -313,7 +313,15 @@ export class PaginationResponse<T extends AttributeMap = AttributeMap> {
             key = typeof this.indexes === 'function' ? this.indexes(index) : this.indexes[index];
         }
 
-        const [pk, sk] = key;
+        const [pk, sk, lsiSk] = key;
+
+        if (lsiSk && sk) {
+          return {
+            [pk]: item[pk],
+            [sk]: item[sk],
+            [lsiSk]: item[lsiSk],
+        };
+        }
 
         return sk === undefined ? {
             [pk]: item[pk],
@@ -552,7 +560,7 @@ export interface PaginatorOptions {
     /**
      * Names for the partition and sort key of the table. Defaults to `['PK', 'SK']`.
      */
-    schema?: [partitionKey: string, sortKey?: string];
+    schema?: [partitionKey: string, sortKey?: string, lsiSortKey?: string];
     /**
      * Object that resolves an index name to the partition and sort key for that index.
      * Also accepts a function that builds the names based on the index name.

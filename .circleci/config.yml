@@ -1,0 +1,105 @@
+version: 2.1
+
+aliases:
+  - &workspace ~/workspace
+  - &container_config
+    docker:
+      - image: cimg/node:14.15.0
+    working_directory: *workspace
+
+  - &attach_workspace
+    attach_workspace:
+      at: *workspace
+
+jobs:
+  prepare:
+    <<: *container_config
+    steps:
+      - checkout
+      - run:
+          name: Setup private npm repository
+          command: echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ./.npmrc
+      - run:
+          name: Set engine strict
+          command: echo "engine-strict=true" >> ./.npmrc
+      - restore_cache:
+          name: Restore node_modules cache
+          key: node_modules-{{ checksum "package-lock.json" }}
+      - run:
+          name: Install dependencies
+          command: |
+            if [ ! -d node_modules ]; then
+              npm ci
+            fi
+      - persist_to_workspace:
+          root: *workspace
+          paths:
+            - .
+      - save_cache:
+          name: Save node_modules cache
+          key: node_modules-{{ checksum "package-lock.json" }}
+          paths:
+            - node_modules
+  lint:
+    <<: *container_config
+    steps:
+      - *attach_workspace
+      - run:
+          name: lint
+          command: npm run lint
+
+  build:
+    <<: *container_config
+    steps:
+      - *attach_workspace
+      - run:
+          name: mkdir
+          command: mkdir -p dist
+      - run:
+          name: build
+          command: npm run build
+      - persist_to_workspace:
+          root: *workspace
+          paths:
+            - dist
+  publish:
+    <<: *container_config
+    working_directory: *workspace
+    steps:
+      - *attach_workspace
+      - run:
+          name: Setup private npm repository
+          command: echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ./.npmrc
+      - run:
+          name: Keyscan Github (HACK)
+          command: |
+            mkdir ~/.ssh
+            touch ~/.ssh/known_hosts
+            chmod 0600 ~/.ssh/known_hosts
+            ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+      - run:
+          name: publish
+          command: npm run release
+
+workflows:
+  version: 2
+  untagged-build:
+    jobs:
+      - prepare:
+          context: npm-access
+      - lint:
+          requires:
+            - prepare
+      - build:
+          requires:
+            - lint
+      - publish:
+          context: npm-publishing
+          requires:
+            - build
+          filters:
+            branches:
+              only:
+                - master
+                - beta
+                - alpha
